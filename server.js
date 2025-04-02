@@ -1,10 +1,9 @@
-// server.js
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const path = require("path");
-const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
+const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const app = express();
@@ -14,12 +13,13 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Create Supabase client
+// Create Supabase client with service role key
+// IMPORTANT: The service role key bypasses RLS
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY; // Make sure this is the service role key
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Configure multer for file uploads
+// Configure multer for temporary file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const uploadsDir = path.join(__dirname, "uploads");
@@ -44,7 +44,7 @@ const upload = multer({
   },
 });
 
-// Upload endpoint
+// Upload endpoint - saving directly to database
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -55,59 +55,72 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const filePath = file.path;
     const fileType = req.body.type || "unknown";
 
-    // Determine bucket based on file type
-    const bucketName = file.mimetype.startsWith("image") ? "images" : "videos";
-
-    // Upload to Supabase Storage
+    // Convert file to base64 string
     const fileBuffer = fs.readFileSync(filePath);
-    const fileName = `${fileType}/${path.basename(filePath)}`;
+    const base64File = fileBuffer.toString("base64");
 
-    const { data, error } = await supabase.storage
-      .from(bucketName)
-      .upload(fileName, fileBuffer, {
-        contentType: file.mimetype,
-        upsert: false,
-      });
+    // Insert into database
+    const { data, error } = await supabase
+      .from("media_files")
+      .insert([
+        {
+          type: fileType,
+          file_name: path.basename(file.originalname),
+          mime_type: file.mimetype,
+          size: file.size,
+          file_data: base64File, // storing file as base64 in the database
+        },
+      ])
+      .select();
 
     if (error) {
-      throw new Error(error.message);
+      throw new Error(`Database error: ${error.message}`);
     }
-
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(fileName);
 
     // Clean up temporary file
     fs.unlinkSync(filePath);
 
-    // Store metadata in database
-    const { data: metaData, error: dbError } = await supabase
-      .from("media_uploads")
-      .insert([
-        {
-          type: fileType,
-          file_name: fileName,
-          mime_type: file.mimetype,
-          size: file.size,
-          url: urlData.publicUrl,
-          bucket: bucketName,
-        },
-      ]);
-
-    if (dbError) {
-      console.error("Database error:", dbError);
-    }
-
     return res.status(200).json({
       success: true,
-      url: urlData.publicUrl,
+      file_id: data[0].id,
       type: fileType,
-      fileName: fileName,
+      fileName: path.basename(file.originalname),
+      size: file.size,
     });
   } catch (error) {
     console.error("Upload error:", error);
     return res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint to retrieve a file by ID
+app.get("/file/:id", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("media_files")
+      .select("*")
+      .eq("id", req.params.id)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Convert base64 back to buffer
+    const fileBuffer = Buffer.from(data.file_data, "base64");
+
+    // Set the correct content type
+    res.setHeader("Content-Type", data.mime_type);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${data.file_name}"`
+    );
+
+    // Send the file data
+    res.send(fileBuffer);
+  } catch (error) {
+    console.error("File retrieval error:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
