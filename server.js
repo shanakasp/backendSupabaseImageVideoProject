@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 5000;
 // Configure CORS with specific options
 app.use(
   cors({
-    origin: "http://localhost:3000", // Your frontend origin
+    origin: "https://stellular-hotteok-3f48c8.netlify.app", // Your frontend origin
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
